@@ -154,13 +154,13 @@ export class DshClient {
    * @param {'queue'|'steer'} [args.mode] - 'queue' waits for the current turn; 'steer' interrupts it.
    * @returns {Promise<{accepted: true}>} DSH's receipt.
    */
-  async prompt({ sessionId, text, mode = 'queue' }) {
+  async prompt({ sessionId, text, mode = 'queue', requestId = randomUUID() }) {
     if (typeof text !== 'string' || text.trim() === '') throw new Error('prompt text must be non-empty')
     // Descriptor: prompt(request: SessionPromptRequest, signal: AbortSignal).
     // The trailing AbortSignal is descriptor metadata, never a wire argument.
     return this.call('session/prompt', {
       request: {
-        requestId: randomUUID(),
+        requestId,
         sessionId,
         mode,
         content: [{ type: 'text', text }],

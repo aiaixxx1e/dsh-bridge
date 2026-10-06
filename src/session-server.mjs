@@ -323,8 +323,31 @@ function renderPairs() {
       name.textContent = pair.codexThreadName
       text.appendChild(name)
     }
+    if (pair.onboarding) {
+      const info = document.createElement('div')
+      info.className = 'muted'
+      const label = (entry) => entry?.state === 'delivered' ? '已投递' : entry ? '待核实' : '待发送'
+      info.textContent = '使用说明：Codex ' + label(pair.onboarding.sides?.codex) + ' · DeepSeek ' + label(pair.onboarding.sides?.dsh)
+      text.appendChild(info)
+    }
     row.appendChild(text)
     const actions = document.createElement('div')
+    const guide = document.createElement('button')
+    guide.className = 'secondary'
+    guide.textContent = '重新发送使用说明'
+    guide.addEventListener('click', async () => {
+      guide.disabled = true
+      try {
+        const response = await fetch('/api/onboard', { method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ pairId: pair.id, force: true }) })
+        const result = await response.json()
+        if (!result.ok) throw new Error(result.error || '部分投递未确认，请查看说明状态')
+        toast('使用说明已投递给双方')
+        await loadPairs()
+      } catch (error) { toast('说明投递未完成: ' + error.message, true) }
+      finally { guide.disabled = false }
+    })
+    actions.appendChild(guide)
     const remove = document.createElement('button')
     remove.className = 'danger'
     remove.textContent = '解除连接'
@@ -422,7 +445,7 @@ $('connect').addEventListener('click', async () => {
     })
     const body = await response.json()
     if (!body.ok) throw new Error((body.error || 'failed') + (body.candidates ? ' 候选: ' + body.candidates.map((c) => c.id).join(', ') : ''))
-    toast('已连接: ' + body.pair.id)
+    toast(body.warning || ('已连接，使用说明已投递: ' + body.pair.id), !!body.warning)
     await loadPairs()
   } catch (error) { toast('连接失败: ' + error.message, true) }
 })
@@ -538,7 +561,8 @@ export async function createSessionServer(options = {}) {
             dshCwd: pair.dshCwd,
             createdAt: pair.createdAt,
             autoForward: pair.autoForward === true,
-            legacyAutoForward: pair.legacyAutoForward === true
+            legacyAutoForward: pair.legacyAutoForward === true,
+            onboarding: pair.onboarding
           }))
         })
         return
@@ -573,6 +597,8 @@ export async function createSessionServer(options = {}) {
             codexThreadName: codexResolved.session.title,
             autoForward: false,
             legacyAutoForward: false,
+            onboardingEnabled: true,
+            onboarding: existing?.onboarding,
             lastTurn: existing?.lastTurn ?? 0,
             createdAt: existing?.createdAt ?? Date.now()
           }
@@ -580,8 +606,27 @@ export async function createSessionServer(options = {}) {
           return true
         })
         log(`[pair] connected ${pairId}: codex=${bound.codexThread} dsh=${bound.dshSessionId}`)
-        sendJson(response, 200, { ok: true, pair: bound })
+        let guide
+        try {
+          const result = await fetch(`${brokerUrl}/onboard`, { method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ pairId }), signal: AbortSignal.timeout(30_000) })
+          guide = await result.json()
+        } catch (error) {
+          guide = { ok: false, pending: true, error: '连接已保存；中继恢复后自动投递说明。' }
+        }
+        sendJson(response, 200, { ok: true, pair: bound, guide,
+          warning: guide.ok ? undefined : (guide.error ?? '连接已保存，部分使用说明投递未确认。') })
         return
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/onboard') {
+        const body = await readJsonBody(request)
+        if (typeof body.pairId !== 'string' || !readState().pairs[body.pairId]) {
+          return sendJson(response, 404, { ok: false, error: 'unknown pairId' })
+        }
+        const result = await fetch(`${brokerUrl}/onboard`, { method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ pairId: body.pairId, force: body.force === true }), signal: AbortSignal.timeout(30_000) })
+        return sendJson(response, result.status, await result.json())
       }
 
       if (request.method === 'DELETE' && url.pathname.startsWith('/api/pairs/')) {

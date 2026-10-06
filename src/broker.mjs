@@ -36,6 +36,7 @@ import { extractCompletedTurns, needsConfirmation, turnsAfter } from '../src/ext
 import { extractTaskMarker } from '../src/envelope.mjs'
 import { findSessionLog, readSessionEvents } from '../src/session-log.mjs'
 import { createTaskService } from '../src/tasks.mjs'
+import { sendConnectionGuides } from '../src/onboarding.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const DEFAULT_STATE = join(HERE, '..', 'state.json')
@@ -384,9 +385,14 @@ async function relayTaskRepliesV2({ state, dsh, tasks, log }) {
 
 /** One relay pass. Task mutations reuse the lock already held by the poll. */
 export async function pollBrokerOnce({ statePath, dsh, log = () => {}, queue = queueToCodex,
-  relayTasks = relayTaskRepliesV2, relayLegacy = relayDshToCodex, relayCodexReplies = recordCodexReplies }) {
+  relayTasks = relayTaskRepliesV2, relayLegacy = relayDshToCodex, relayCodexReplies = recordCodexReplies,
+  brokerUrl = 'http://127.0.0.1:8791' }) {
   return withStateLock(statePath, async () => {
     const fresh = loadState(statePath)
+    for (const pair of Object.values(fresh.pairs)) {
+      if (pair.onboardingEnabled !== true) continue
+      await sendConnectionGuides({ state: fresh, pairId: pair.id, save: () => saveState(fresh, statePath), dsh, queue, brokerUrl })
+    }
     const tasks = createTaskService({
       statePath,
       load: () => fresh,
@@ -459,7 +465,18 @@ async function recordCodexReplies({ state, tasks, log }) {
 }
 
 /** Build the loopback HTTP API. */
-function createBrokerServer({ statePath, dsh, log, tasks }) {
+export function createBrokerServer({ statePath, dsh, log, tasks, queue = queueToCodex, codexHome }) {
+  let server
+  const onboard = async (pairId, force = false) => {
+    let result
+    await withStateLock(statePath, async () => {
+      const state = loadState(statePath)
+      result = await sendConnectionGuides({ state, pairId, force, dsh, queue,
+        brokerUrl: `http://127.0.0.1:${server.address().port}`,
+        save: () => saveState(state, statePath) })
+    })
+    return result
+  }
   /**
    * Run one read-modify-write cycle over the latest on-disk state under the
    * cross-process lock, committing only when the operation reports success.
@@ -477,7 +494,7 @@ function createBrokerServer({ statePath, dsh, log, tasks }) {
     return committed
   }
 
-  return createServer(async (request, response) => {
+  server = createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
     const send = (status, body) => {
       const text = JSON.stringify(body)
@@ -582,7 +599,7 @@ function createBrokerServer({ statePath, dsh, log, tasks }) {
         if (typeof body.pairId !== 'string' || typeof body.codex !== 'string' || typeof body.dsh !== 'string') {
           return send(400, { ok: false, error: 'pairId, codex (exact id), and dsh (exact id) are required' })
         }
-        const codexResolved = await resolveExactSession('codex', body.codex, { dsh })
+        const codexResolved = await resolveExactSession('codex', body.codex, { dsh, codexHome })
         if (!codexResolved.ok) return send(400, { ok: false, error: codexResolved.error, candidates: codexResolved.candidates })
         const dshResolved = await resolveExactSession('dsh', body.dsh, { dsh })
         if (!dshResolved.ok) return send(400, { ok: false, error: dshResolved.error, candidates: dshResolved.candidates })
@@ -598,14 +615,26 @@ function createBrokerServer({ statePath, dsh, log, tasks }) {
             codexThreadName: codexResolved.session.title,
             autoForward: false,
             legacyAutoForward: false,
+            onboardingEnabled: true,
+            onboarding: existing?.onboarding,
             lastTurn: existing?.lastTurn ?? 0,
             createdAt: existing?.createdAt ?? Date.now()
           }
           bound = state.pairs[pairId]
           return true
         })
-        send(200, { ok: true, pair: bound })
+        const guide = await onboard(bound.id)
+        send(200, { ok: true, pair: bound, guide })
         return
+      }
+
+      if (request.method === 'POST' && url.pathname === '/onboard') {
+        const body = await readBody()
+        if (typeof body.pairId !== 'string' || !loadState(statePath).pairs[body.pairId]) {
+          return send(404, { ok: false, error: 'unknown pairId' })
+        }
+        const result = await onboard(body.pairId, body.force === true)
+        return send(result.ok ? 200 : 502, result)
       }
 
       if (request.method === 'POST' && url.pathname === '/send-task') {
@@ -665,6 +694,7 @@ function createBrokerServer({ statePath, dsh, log, tasks }) {
       send(500, { ok: false, error: String(error?.message ?? error) })
     }
   })
+  return server
 }
 
 /**
@@ -701,6 +731,8 @@ async function initPair(state, { pairId, dshSessionId, codexThread, dshCwd, auto
     codexThread,
     ...threadName === undefined ? {} : { codexThreadName: threadName },
     autoForward: autoForward === true,
+    onboardingEnabled: true,
+    onboarding: existing?.onboarding,
     lastTurn,
     createdAt: existing?.createdAt ?? Date.now()
   }
@@ -817,6 +849,7 @@ async function main() {
         return
       }
       let registered
+      let initGuide
       await mutate(async (fresh) => {
         registered = await initPair(fresh, {
           pairId,
@@ -826,8 +859,12 @@ async function main() {
           autoForward: flags['auto-forward'] === true,
           replay: flags.replay === true
         })
+        initGuide = await sendConnectionGuides({ state: fresh, pairId, dsh, queue: queueToCodex,
+          brokerUrl: typeof flags['broker-url'] === 'string' ? flags['broker-url'] : (process.env.DSH_BRIDGE_BROKER_URL ?? 'http://127.0.0.1:8791'),
+          save: () => saveState(fresh, statePath) })
       })
       console.log('pair registered:', JSON.stringify(registered, null, 2))
+      console.log('connection guide:', JSON.stringify(initGuide))
       return
     }
 
@@ -989,6 +1026,8 @@ async function main() {
           // v1 blanket forwarding stays off; v2 forwards task-correlated replies only.
           autoForward: false,
           legacyAutoForward: false,
+          onboardingEnabled: true,
+          onboarding: existing?.onboarding,
           lastTurn: existing?.lastTurn ?? 0,
           createdAt: existing?.createdAt ?? Date.now(),
           ...typeof flags.note === 'string' ? { note: flags.note } : {}
@@ -997,6 +1036,13 @@ async function main() {
       })
       console.log('pair bound (exact-id verified on both sides):')
       console.log(JSON.stringify(bound, null, 2))
+      let guide
+      await mutate(async fresh => {
+        guide = await sendConnectionGuides({ state: fresh, pairId, dsh, queue: queueToCodex,
+          brokerUrl: typeof flags['broker-url'] === 'string' ? flags['broker-url'] : (process.env.DSH_BRIDGE_BROKER_URL ?? 'http://127.0.0.1:8791'),
+          save: () => saveState(fresh, statePath) })
+      })
+      console.log(JSON.stringify({ guide }))
       return
     }
 
@@ -1140,6 +1186,7 @@ async function main() {
       log('  GET  /status')
       log('  GET  /sessions?side=codex|dsh|both&filter=')
       log('  POST /bind        {pairId, codex, dsh}   exact ids only')
+      log('  POST /onboard     {pairId, force?}   connection instructions')
       log('  POST /send-task   {pairId, text, taskId?, mode?}')
       log('  GET  /tasks')
       log('  POST /reconcile')
@@ -1157,7 +1204,7 @@ async function main() {
        * resurrect an older `lastTurn` and re-send delivered turns.
        */
       const pollOnce = async () => {
-        await pollBrokerOnce({ statePath, dsh, log })
+        await pollBrokerOnce({ statePath, dsh, log, brokerUrl: `http://127.0.0.1:${server.address().port}` })
       }
 
       // The interval is deliberately NOT unref'd: the polling loop is the

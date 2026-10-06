@@ -6,6 +6,7 @@
 - 打开一个网页，看到两端所有会话，点选两个，建立连接
 - 之后 Codex 可以派任务给 DSH，DSH 完成后结果自动回传
 - 角色可互换：谁当产品经理、谁当执行者只取决于你往哪边发
+- 新连接自动给双方发送使用说明，新会话无需继承之前的聊天记忆
 
 > **本项目绝大部分代码由 AI 编写。** 具体分工见[作者与来源](#作者与来源)。
 > 请把它当作**经过测试但仍在演进**的工具使用，不要直接用在不可回退的生产任务上。
@@ -186,9 +187,31 @@ console 8792: started
 
 打开 `http://127.0.0.1:8792/` 即可。
 
+### 第一次使用或换新会话
+
+1. 打开 Codex 和 DSH，分别建立或选定要协作的会话。
+2. 启动本服务，在连接台各选一个会话并点击连接。
+3. 服务向双方发送使用说明；说明不要求回复，也不会创建任务。
+4. 在任一端给出具体需求和角色分工，例如「你负责拆解需求，把实现任务交给对端」。
+
+换新会话后需要重新选定并连接，旧配对不会自动转移。已收到说明的会话若上下文被清除，
+可在连接台点「重新发送使用说明」。双方仍需有执行本地 HTTP 或 shell 调用的能力。
+无需给 Codex/DSH 安装插件即可使用这些服务入口；MCP 和 DSH 工具插件属于可选接入方式。
+
 ---
 
 ## 网页连接台
+
+连接成功后，服务自动向双方各投递一条使用说明，包含当前配对与会话 ID、服务地址、
+各自的派活入口和回传规则。说明明确要求无需回复、无需转发，不创建任务。
+新会话因此不需要继承之前的聊天记忆；仍需具有本地 HTTP 或 shell 调用能力。
+
+同一配对、双方会话 ID、说明版本和服务地址只自动发送一次；重启或重复绑定不会重发。
+换会话后重新投递。中继离线时先保存连接，恢复运行后的轮询会补发。
+中断或失败的单边投递会显示「待核实」，不会自动重试不确定的消息。
+连接台有「重新发送使用说明」按钮，会显式向双方再发一次；重新发送可能重复此前已收到的说明。
+HTTP 入口为 `POST /onboard {"pairId":"你的配对ID","force":true}`；不带 force 时按去重状态处理。
+投递回执表示入队成功，并不保证模型已经阅读，或永久保留说明。
 
 页面结构：
 
@@ -222,6 +245,7 @@ console 8792: started
 node src\broker.mjs sessions [codex|dsh|both] [--filter TEXT]   # 列会话
 node src\broker.mjs bind <pairId> --codex <exactId> --dsh <exactId>
 node src\broker.mjs send-task <pairId> (--body-file F | --stdin | <text...>) [--task-id ID] [--steer]
+node src\broker.mjs send-task-to-codex <pairId> (--body-file F | --stdin | <text...>) [--task-id ID]
 node src\broker.mjs status [taskId]        # 任务与消息状态
 node src\broker.mjs reconcile              # 处理中断的投递
 node src\broker.mjs confirm [messageId]    # 有消费证据才转 completed
@@ -245,7 +269,9 @@ node src\broker.mjs init | list | threads | send | to-codex | tick | backfill
 | GET | `/status` | 配对与计数 |
 | GET | `/sessions?side=codex\|dsh\|both&filter=` | 两端会话清单 |
 | POST | `/bind` | `{pairId, codex, dsh}`，**仅精确 ID** |
+| POST | `/onboard` | `{pairId, force?}`，投递使用说明；`force:true` 显式重发双方 |
 | POST | `/send-task` | `{pairId, text, taskId?, mode?}`，长正文走 JSON |
+| POST | `/send-task-to-codex` | `{pairId, text, taskId?}`，给 Codex 派发关联任务 |
 | GET | `/tasks` | 任务与消息状态 |
 | POST | `/reconcile` | 处理中断投递 |
 | POST | `/confirm` | `{messageId?}`，有证据才 completed |
@@ -262,9 +288,26 @@ node src\broker.mjs init | list | threads | send | to-codex | tick | backfill
 | GET | `/api/diagnostics` | 位置发现结果与尝试过的候选 |
 | GET | `/api/pairs` | 已建立的连接 |
 | POST | `/api/pairs` | `{codex, dsh, pairId?}` |
+| POST | `/api/onboard` | `{pairId, force?}`，经 broker 投递或重发使用说明 |
 | DELETE | `/api/pairs/<id>` | 解除连接 |
 | POST | `/api/send` | `{pairId, text}`，经 broker 派活 |
 | GET | `/api/broker` | broker 是否存活 |
+
+### 最小派活示例
+
+把 `pairId` 替换为连接台显示的配对 ID。向 DSH 派活用 `/send-task`；
+向 Codex 派活改用 `/send-task-to-codex`，正文格式相同。
+
+```powershell
+$body = '{"pairId":"pair-example","text":"检查项目入口，给出修改建议；先不要修改文件。"}'
+Invoke-RestMethod -Uri 'http://127.0.0.1:8791/send-task' -Method Post `
+  -ContentType 'application/json; charset=utf-8' `
+  -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
+```
+
+返回的任务 ID 用于 `/tasks` 查询和回复关联。不要把收到的结果重新调用派活接口当作新任务，
+除非确实需要对方继续工作。Codex 向 DSH 回传已有任务的结果使用 `/to-dsh`，保留原任务标记；
+DSH 回答 Codex 的任务时，在最终答复中保留原任务标记，由中继回传。
 
 ---
 
@@ -427,9 +470,10 @@ broker 启动时会写一份发现文件 `$DSH_HOME/dsh-bridge.json`，让插件
 ## 测试
 
 ```powershell
-node test\test-v2.mjs        # 10 个用例，注入传输 + 隔离状态
+node test\test-v2.mjs        # 11 个用例，注入传输 + 隔离状态
 node test\test-console.mjs   # HTTP 转投、离线拒绝、长正文、自定义端口与 CLI 状态路径
 node test\test-poll.mjs      # 持锁轮询与任务回传不会重复取锁；并发轮询只回传一次
+node test\test-onboarding.mjs # 自动说明、去重、补发、单边中断、离线恢复（隔离传输）
 node test\test-fresh-checkout.mjs # 复制发布文件到干净目录，清除代理环境变量后运行隔离测试
 node test\test-relay.mjs     # 去重与并发
 node test\probe-argv-limit.mjs <codexThreadId>   # 实测命令行上限
@@ -464,6 +508,7 @@ node test\probe-argv-limit.mjs <codexThreadId>   # 实测命令行上限
 | h | 配对/任务持久化，且正文不写入状态文件 |
 | i | 无标记不回传、任务保持 open；有标记回传一次、任务转 answered |
 | j | 标记指向别的任务被拒 |
+| k | Codex 方向任务携带标记、保存方向，并按关联回复关闭 |
 
 ---
 
@@ -479,7 +524,8 @@ node test\probe-argv-limit.mjs <codexThreadId>   # 实测命令行上限
 6. **MCP 未实现**（见后续开发）。
 7. **会话选择依赖本地状态库可读。** 库被独占锁定时会回退到 `session_index.jsonl`，
    此时工作区等字段标 `unknown`。
-8. **没有对 DSH 会话内容做脱敏**：中继会把整轮答复投给 Codex。请自行确认内容可外发。
+8. **任务正文与关联答复按原文传递**，不自动脱敏。运行数据保存在本机，默认 Git 忽略状态、正文和日志；这些文件不应上传。
+9. **自动说明不能保证模型始终记住或遵循。** 对端收到说明并不等于已完成阅读；上下文丢失时可以手动重发。
 
 ---
 
@@ -500,7 +546,7 @@ node test\probe-argv-limit.mjs <codexThreadId>   # 实测命令行上限
 ### P1 — 让它更省心
 
 - **连接台开机自启**：broker 已有计划任务，连接台还没有。
-- **连接台的"向 Codex 发消息"入口**：目前只能经 broker `/to-codex` 或 DSH 插件。
+- **连接台的"向 Codex 发消息"入口**：服务已有 `/send-task-to-codex`；网页尚未提供对应派活表单。
 - **状态文件迁移**：`state.json` schema 变更时的版本迁移工具。
 - **失败重试策略可配**：目前是下一轮中继重试，没有退避上限。
 
@@ -520,6 +566,7 @@ src/envelope.mjs        消息信封、kind 语义、ack 判定、任务标记�
 src/tasks.mjs           任务状态机、投递语义、对账、回传决策
 src/body-store.mjs      正文存储与分片。改内联阈值改这里
 src/broker.mjs          配对、中继、HTTP/CLI 入口
+src/onboarding.mjs      自动连接说明、双端投递状态与去重
 src/session-server.mjs  连接台（网页 + 管理 API），故意不当中继
 src/client.mjs          DSH HTTP 客户端（含本地 cookie 签发）
 src/session-log.mjs     多帧 zstd 会话日志解码
@@ -545,8 +592,8 @@ docs/                   设计文档
 
 | 角色 | 贡献 |
 |---|---|
-| **DeepSeek**（AI，主要开发） | 架构落地、全部代码实现、实测与调试、踩坑定位与修复 |
-| **ChatGPT / Codex**（AI，需求与评审） | 需求澄清与方案确认、设计评审、派活协议设计；实测中发现并指出两个真实缺陷（`DSH_HOME` 回退缺失、跨进程游标回退导致重复投递） |
+| **DeepSeek**（AI，开发） | 初始架构与实现、双向任务接口、工具插件、实测与调试 |
+| **ChatGPT / Codex**（AI，开发与评审） | 需求与协议评审；接手后的发布保留、连接台修复、轮询锁修复、自动连接说明与回归测试 |
 | **项目发起人与人类维护者** | 提出需求与最终形态、提供测试环境与授权、功能验收；隐私清理与发布决策 |
 
 **如实说明：本项目的代码与文档绝大部分由 AI（DeepSeek 与 ChatGPT/Codex）生成**，
