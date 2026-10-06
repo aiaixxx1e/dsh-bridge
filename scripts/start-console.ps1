@@ -59,7 +59,7 @@ $env:DSH_BRIDGE_BROKER_URL = "http://127.0.0.1:$BrokerPort"
 # shell without DSH_HOME still finds the session logs.
 if (-not $env:DSH_HOME) { $env:DSH_HOME = Join-Path $env:USERPROFILE '.dsh' }
 
-$arguments = @($script, '--port', "$Port", '--log', $LogPath)
+$arguments = @($script, '--port', "$Port", '--log', $LogPath, '--broker-port', "$BrokerPort")
 if ($PSBoundParameters.ContainsKey('CodexHome') -and $CodexHome) { $arguments += @('--codex-home', $CodexHome) }
 if ($PSBoundParameters.ContainsKey('DshHome') -and $DshHome) { $arguments += @('--dsh-home', $DshHome) }
 if ($PSBoundParameters.ContainsKey('DshUrl') -and $DshUrl) { $arguments += @('--dsh-url', $DshUrl) }

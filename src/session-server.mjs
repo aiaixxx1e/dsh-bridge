@@ -677,7 +677,7 @@ export function diagnosticsFragment(env) {
   return `<pre>${escapeHtml(JSON.stringify(env.diagnostics, null, 2))}</pre>`
 }
 
-/** CLI entry: `node session-server.mjs [--port 8792] [--codex-home P] [--dsh-home P] [--open]`. */
+/** CLI entry: `node session-server.mjs [--port 8792] [--broker-port 8791] [--codex-home P] [--dsh-home P] [--open]`. */
 async function main() {
   const argv = process.argv.slice(2)
   const flags = {}
@@ -702,7 +702,15 @@ async function main() {
     dshUrl: typeof flags['dsh-url'] === 'string' ? flags['dsh-url'] : undefined
   })
 
-  const built = await createSessionServer({ env, log })
+  // `--broker-port` must reach the broker URL, otherwise a broker started on a
+  // non-default port is invisible to this console: it would report "broker down"
+  // and fall back to direct delivery, silently losing reply relay.
+  const brokerPort = Number(flags['broker-port'] ?? DEFAULT_BROKER_PORT)
+  const built = await createSessionServer({
+    env,
+    log,
+    brokerUrl: typeof flags['broker-url'] === 'string' ? flags['broker-url'] : `http://127.0.0.1:${brokerPort}`
+  })
   await new Promise((resolve) => built.server.listen(port, '127.0.0.1', resolve))
 
   const url = `http://127.0.0.1:${port}/`

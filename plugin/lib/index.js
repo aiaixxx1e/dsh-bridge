@@ -34,6 +34,60 @@ function dshHome() {
 }
 
 /**
+ * Import `@deepseek-ai/dsh-tools` through a fallback chain.
+ *
+ * The package is shipped by DeepSeek Harness and lives inside DSH's own profile
+ * store, so a plain `import` only resolves when this plugin sits in that store
+ * too. When the plugin is loaded from an arbitrary checkout, the plain import
+ * fails with ERR_MODULE_NOT_FOUND, which would break the tools at run time.
+ *
+ * Order:
+ *   1. a normal bare import (works when installed into the profile)
+ *   2. `$DSH_TOOLS_PATH`, an explicit override for unusual layouts
+ *   3. probing `$DSH_HOME/profiles/node_modules` and each profile's own
+ *      `node_modules`, which is where DSH actually keeps it
+ *
+ * @returns {Promise<{defineTool: Function}>} the tools module.
+ */
+async function loadDshTools() {
+  const attempts = []
+  try {
+    return await import('@deepseek-ai/dsh-tools')
+  } catch (error) {
+    attempts.push(`bare import: ${error?.code ?? error?.message}`)
+  }
+
+  const { pathToFileURL } = await import('node:url')
+  const { join } = await import('node:path')
+
+  const candidates = []
+  if (process.env.DSH_TOOLS_PATH) candidates.push(process.env.DSH_TOOLS_PATH)
+  const home = dshHome()
+  candidates.push(join(home, 'profiles', 'node_modules', '@deepseek-ai', 'dsh-tools', 'lib', 'index.js'))
+  // Per-profile stores, in case the shared store is absent.
+  try {
+    const { readdirSync } = await import('node:fs')
+    for (const profile of readdirSync(join(home, 'profiles'))) {
+      candidates.push(join(home, 'profiles', profile, 'node_modules', '@deepseek-ai', 'dsh-tools', 'lib', 'index.js'))
+    }
+  } catch {
+    // No profiles directory: the remaining candidates still stand.
+  }
+
+  for (const candidate of candidates) {
+    try {
+      return await import(pathToFileURL(candidate).href)
+    } catch (error) {
+      attempts.push(`${candidate}: ${error?.code ?? error?.message}`)
+    }
+  }
+
+  throw new Error(
+    `cannot load @deepseek-ai/dsh-tools; set DSH_TOOLS_PATH to its lib/index.js. Tried: ${attempts.join(' | ')}`
+  )
+}
+
+/**
  * Resolve the broker base URL.
  *
  * @returns {Promise<string>} base URL without a trailing slash.
@@ -124,16 +178,16 @@ async function post(url, body, signal) {
 /**
  * Register the Codex-bridge tools.
  *
- * `@deepseek-ai/dsh-tools` is imported lazily so a host that resolves the
- * package from its own module graph does not depend on this package's
- * resolution order.
+ * `@deepseek-ai/dsh-tools` is resolved through {@link loadDshTools} rather than a
+ * bare import, so the plugin works both when installed into DSH's own profile
+ * store and when it is loaded from an arbitrary checkout.
  *
  * @param {object} ctx - registrant context carrying the tool registry.
  * @returns {Promise<void>} resolves once both tools are registered.
  */
 function apply(ctx) {
   return (async () => {
-    const { defineTool } = await import('@deepseek-ai/dsh-tools')
+    const { defineTool } = await loadDshTools()
 
     ctx.tools.register(
       defineTool({

@@ -33,6 +33,61 @@
 
 ---
 
+## 开箱可用性（clone 之后要不要额外配置）
+
+**核心功能：零配置。** clone 下来直接跑即可，无需环境变量、无需装依赖、无需改配置。
+
+| 需要的前提 | 说明 |
+|---|---|
+| Node.js ≥ 22 | 唯一硬性依赖。`src/` 只使用 `node:` 内置模块，**没有任何第三方包，也没有 `npm install` 这一步** |
+| 目标程序正在运行 | 要连 DSH，DSH 桌面版得开着；要连 Codex，Codex 得用过（产生本地状态库） |
+
+已验证的冷启动（把仓库 clone 到干净目录后直接执行）：
+
+```
+node src/broker.mjs sessions dsh        → 直接列出真实会话
+node src/session-server.mjs --port 8892 → 页面 HTTP 200，codex=27, dsh=15
+```
+
+位置发现是自动的，**不需要你告诉它装在哪**：Codex 可执行文件从**运行中的进程**取得，
+状态库通过**探测 `threads` 表**找到，DSH 安装根从**运行中主进程**取得。
+（原理与实测证据见[安装位置无关性](#安装位置无关性)）
+
+### 需要配置的部分
+
+| 项 | 是否需要配置 | 说明 |
+|---|---|---|
+| 启动连接台与 broker | ❌ 不需要 | `scripts/start-bridge.bat`（双击）或 `python scripts/start-bridge.py --open` |
+| 在网页里连接两个会话 | ❌ 不需要 | 打开 `http://127.0.0.1:8792/`，点选即可 |
+| 自定义路径/端口 | ⚠️ 仅非默认安装时需要 | `--codex-home` / `--dsh-home` / `--dsh-url` / `--port` |
+| **DSH 原生工具插件**（`codex_send` / `codex_pairs`） | ✅ **需要** | 见下 |
+
+### 插件需要额外安装（可选）
+
+`plugin/` 是 **DSH 侧的可选快捷入口**，它不是核心功能的一部分：不装它，Codex↔DSH 的派活、
+回传、多轮往返**全部照常工作**（那些走 broker 的 HTTP/CLI）。装了它的好处是 DSH 的 agent
+自己就能调 `codex_send` 派活给 Codex，不用绕外部命令。
+
+安装步骤（需要改 DSH 的 profile，所以无法零配置）：
+
+```powershell
+# 1) 放进 DSH 能解析到的位置（示例用 junction，源码仍在你的 clone 里）
+$profile = "$env:USERPROFILE\.dsh\profiles\desktop"
+New-Item -ItemType Junction -Path "$profile\node_modules\dsh-codex-bridge-tool" `
+  -Target "<你的 clone 路径>\plugin"
+
+# 2) 在 profile 的 cordis.patch.yml 里加一行 insert
+#    - insert:
+#        - id: codex-bridge-tool
+#          name: dsh-codex-bridge-tool
+```
+
+插件对 `@deepseek-ai/dsh-tools`（DSH 自带的包）的解析走回退链：先普通 import，
+再 `$DSH_TOOLS_PATH`，再探测 `$DSH_HOME/profiles/node_modules`。
+**在 DSH 的标准布局下不需要设任何环境变量**；只有非常规安装才需要 `DSH_TOOLS_PATH`。
+
+---
+
 ## 它解决什么问题
 
 Codex 和 DeepSeek Harness 各自都是好用的编码代理，但它们是两个孤岛：各自的会话有各自的上下文，
@@ -92,12 +147,13 @@ Codex 和 DeepSeek Harness 各自都是好用的编码代理，但它们是两�
 | 项 | 要求 |
 |---|---|
 | 操作系统 | Windows 10/11（当前实现依赖 Windows 进程查询与 `codex.exe` 路径约定） |
-| Node.js | **≥ 22**（`node:sqlite` 与 `node:zlib` 的 zstd 支持需要 22+，实测 24.20） |
-| Python | 可选，仅启动脚本需要。实测 3.12 |
+| Node.js | **≥ 22**（`node:sqlite` 与 `node:zlib` 的 zstd 支持需要 22+，实测 24.20）。**无第三方依赖，无需 `npm install`** |
+| Python | 可选，仅 `start-bridge.py` 需要。若无 Python，`start-bridge.bat` 会回退到 PowerShell |
 | Codex | 桌面版或 CLI，需已登录并使用过（产生 `state_*.sqlite` 与 rollout） |
 | DeepSeek Harness | 桌面版正在运行（Web 服务监听 `127.0.0.1:19387`） |
 
-**不需要**给 Codex 或 DSH 安装任何插件。DSH 原生工具插件（`plugin/`）是可选的快捷入口。
+**不需要**给 Codex 或 DSH 安装任何插件。DSH 原生工具插件（`plugin/`）是可选的快捷入口，
+安装方式见[开箱可用性](#开箱可用性clone-之后要不要额外配置)。
 
 ---
 
