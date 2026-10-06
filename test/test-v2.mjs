@@ -442,6 +442,48 @@ process.stdout.write(delivered ? 'delivered' : 'skipped')
 }
 
 // ---------------------------------------------------------------------------
+// k. The Codex-ward direction is symmetric: it records a task, carries the
+//    marker, and closes only when the peer's marked reply comes back
+// ---------------------------------------------------------------------------
+
+{
+  const { taskMarker } = await import('../src/envelope.mjs')
+  const harness = makeHarness()
+  await harness.seedPair()
+
+  const sent = await harness.tasks.sendTaskToCodex({ pairId: 'sim', text: 'brief test', taskId: 'task-to-codex' })
+  const recorded = harness.load().tasks['task-to-codex']
+  // The marker must be on the wire, otherwise the peer cannot echo it back.
+  const firstCall = harness.queueCalls[0]?.message ?? ''
+  const markerOnWire = firstCall.includes(`[bridge-task task-to-codex]`)
+
+  // A reply that does NOT name the task must not close it.
+  const noMarker = await harness.tasks.recordCodexReply({ taskId: 'task-to-codex', turn: undefined })
+  const stillOpen = harness.load().tasks['task-to-codex'].status
+
+  // The peer's marked reply closes it, and the reply text is retained.
+  const replyTurn = { turn: 99, text: `${taskMarker('task-to-codex')}\n\n收到，派活测试通过` }
+  const closed = await harness.tasks.recordCodexReply({ taskId: 'task-to-codex', turn: replyTurn })
+  const answered = harness.load().tasks['task-to-codex']
+
+  check(
+    'k. Codex-ward tasks record direction, carry the marker, and close on the marked reply',
+    sent.ok &&
+      recorded?.dir === 'to-codex' &&
+      recorded?.requestTurn !== undefined &&
+      markerOnWire &&
+      noMarker.closed === false &&
+      stillOpen === 'open' &&
+      closed.closed === true &&
+      answered.status === 'answered' &&
+      answered.replyText.includes('派活测试通过'),
+    `dir=${recorded?.dir}, baseline=${recorded?.requestTurn}, marker on wire=${markerOnWire}, unmarked reply closed=${noMarker.closed} (task stayed ${stillOpen}), marked reply -> ${answered.status}`
+  )
+
+  rmSync(harness.dir, { recursive: true, force: true })
+}
+
+// ---------------------------------------------------------------------------
 
 const failed = results.filter((result) => !result.ok)
 console.log('')

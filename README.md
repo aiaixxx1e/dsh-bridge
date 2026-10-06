@@ -39,7 +39,7 @@
 
 | 需要的前提 | 说明 |
 |---|---|
-| Node.js ≥ 22 | 唯一硬性依赖。`src/` 只使用 `node:` 内置模块，**没有任何第三方包，也没有 `npm install` 这一步** |
+| Node.js 24 或更高 | 实测 24.20。`src/` 只使用 `node:` 内置模块，**没有任何第三方包，也没有 `npm install` 这一步** |
 | 目标程序正在运行 | 要连 DSH，DSH 桌面版得开着；要连 Codex，Codex 得用过（产生本地状态库） |
 
 已验证的冷启动（把仓库 clone 到干净目录后直接执行）：
@@ -127,6 +127,7 @@ Codex 和 DeepSeek Harness 各自都是好用的编码代理，但它们是两�
   维护去重游标。必须只有一个实例——两个实例会互相覆盖游标，导致重复投递。
 - **console（8792）**：网页界面。只做会话列举和配对管理，**不当中继**。
   发消息时转投 broker 的 `/send-task`，让 broker 登记关联任务并负责回传。
+  broker 离线时返回 `503 / BROKER_UNAVAILABLE`，任务尚未发送；启动中继服务后再重试。
 
 两端各自用的官方机制：
 
@@ -147,7 +148,7 @@ Codex 和 DeepSeek Harness 各自都是好用的编码代理，但它们是两�
 | 项 | 要求 |
 |---|---|
 | 操作系统 | Windows 10/11（当前实现依赖 Windows 进程查询与 `codex.exe` 路径约定） |
-| Node.js | **≥ 22**（`node:sqlite` 与 `node:zlib` 的 zstd 支持需要 22+，实测 24.20）。**无第三方依赖，无需 `npm install`** |
+| Node.js | **24 或更高**（需要 `node:sqlite` 与 `node:zlib` 的 zstd 支持，实测 24.20）。**无第三方依赖，无需 `npm install`** |
 | Python | 可选，仅 `start-bridge.py` 需要。若无 Python，`start-bridge.bat` 会回退到 PowerShell |
 | Codex | 桌面版或 CLI，需已登录并使用过（产生 `state_*.sqlite` 与 rollout） |
 | DeepSeek Harness | 桌面版正在运行（Web 服务监听 `127.0.0.1:19387`） |
@@ -427,11 +428,22 @@ broker 启动时会写一份发现文件 `$DSH_HOME/dsh-bridge.json`，让插件
 
 ```powershell
 node test\test-v2.mjs        # 10 个用例，注入传输 + 隔离状态
+node test\test-console.mjs   # HTTP 转投、离线拒绝、长正文、自定义端口与 CLI 状态路径
+node test\test-poll.mjs      # 持锁轮询与任务回传不会重复取锁；并发轮询只回传一次
+node test\test-fresh-checkout.mjs # 复制发布文件到干净目录，清除代理环境变量后运行隔离测试
 node test\test-relay.mjs     # 去重与并发
 node test\probe-argv-limit.mjs <codexThreadId>   # 实测命令行上限
 ```
 
 验收套件**严格区分真实与模拟**：
+
+新增连接台测试会启动真实的本地 HTTP 服务和 CLI 进程，但对端传输使用隔离测试替身，
+不投递到真实 Codex/DSH 会话。干净目录测试无需安装依赖，也不使用已有状态或插件 junction；
+它验证发布文件布局、启动及转投行为，不替代真实安装环境下的会话发现与双向任务验收。
+
+维护者在源码工作区运行 `node dsh-bridge/test-build-public.mjs`，验证发布成功与失败时
+都保留目标目录的 `.git`、运行状态、正文和用户文件。发布先在 `work/` 暂存并审计，
+通过后仅更新生成文件；不会清空目标目录。已从源码移除的旧发布文件需维护者单独清理。
 
 **真实**
 - 命令行上限：30 KiB 通过 / 32 KiB `ENAMETOOLONG`

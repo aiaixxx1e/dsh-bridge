@@ -4,8 +4,8 @@
 //
 // Shape:  Codex  <->  this service  <->  DeepSeek Harness
 //
-// One process owns the pairing state, the session inventory for both sides, and
-// the bidirectional transport. Open the page, pick one Codex session and one DSH
+// The console manages pairing and inventory; the broker owns transport.
+// Open the page, pick one Codex session and one DSH
 // session by exact id, press connect. Everything else reuses the already-tested
 // pieces (client.mjs / session-log.mjs / tasks.mjs / adapters.mjs / resolvers.mjs).
 //
@@ -448,7 +448,7 @@ export async function createSessionServer(options = {}) {
   const log = options.log ?? ((message) => console.log(message))
   const env = options.env ?? (await resolveEnvironment(options))
 
-  const dsh = new DshClient({ baseUrl: env.dshUrl, dshHome: env.dshHome.path })
+  const dsh = options.dsh ?? new DshClient({ baseUrl: env.dshUrl, dshHome: env.dshHome.path })
   const brokerUrl = options.brokerUrl ?? process.env.DSH_BRIDGE_BROKER_URL ?? `http://127.0.0.1:${DEFAULT_BROKER_PORT}`
   const readState = () => loadState(statePath)
   const mutate = (operation) =>
@@ -615,9 +615,8 @@ export async function createSessionServer(options = {}) {
           sendJson(response, 400, { ok: false, error: 'text is required' })
           return
         }
-        // Prefer the broker so the message becomes a correlated task whose reply is
-        // relayed back. Fall back to a plain prompt only when the broker is down,
-        // and say so, because then no reply will be relayed.
+        // A direct prompt would bypass task registration and lose reply relay.
+        // Leave the request unsent when the relay owner is unavailable.
         if (await brokerAlive()) {
           const relayed = await fetch(`${brokerUrl}/send-task`, {
             method: 'POST',
@@ -626,20 +625,20 @@ export async function createSessionServer(options = {}) {
             signal: AbortSignal.timeout(60_000)
           })
           const relayedBody = await relayed.json()
-          sendJson(response, relayed.ok ? 200 : 502, {
+          const accepted = relayed.ok && relayedBody.ok === true
+          sendJson(response, accepted ? 200 : 502, {
             ...relayedBody,
+            ok: accepted,
             via: 'broker',
-            relayed: relayed.ok === true
+            relayed: accepted
           })
           return
         }
-        const receipt = await dsh.prompt({ sessionId: pair.dshSessionId, text: body.text, mode: body.mode === 'steer' ? 'steer' : 'queue' })
-        sendJson(response, 200, {
-          ok: true,
-          receipt,
-          via: 'direct',
+        sendJson(response, 503, {
+          ok: false,
+          code: 'BROKER_UNAVAILABLE',
           relayed: false,
-          warning: `broker at ${brokerUrl} is not running: the message was delivered, but its reply will NOT be relayed back`
+          error: '中继服务未运行，任务尚未发送；启动中继服务后重试。'
         })
         return
       }
@@ -703,17 +702,17 @@ async function main() {
   })
 
   // `--broker-port` must reach the broker URL, otherwise a broker started on a
-  // non-default port is invisible to this console: it would report "broker down"
-  // and fall back to direct delivery, silently losing reply relay.
+  // non-default port would otherwise be invisible to this console.
   const brokerPort = Number(flags['broker-port'] ?? DEFAULT_BROKER_PORT)
   const built = await createSessionServer({
     env,
     log,
+    statePath: typeof flags.state === 'string' ? flags.state : undefined,
     brokerUrl: typeof flags['broker-url'] === 'string' ? flags['broker-url'] : `http://127.0.0.1:${brokerPort}`
   })
   await new Promise((resolve) => built.server.listen(port, '127.0.0.1', resolve))
 
-  const url = `http://127.0.0.1:${port}/`
+  const url = `http://127.0.0.1:${built.server.address().port}/`
   log(`Codex ↔ DSH 连接台: ${url}`)
   log(`  Codex home : ${env.codexHome.path ?? '(not found)'}  [${env.codexHome.source}]`)
   log(`  Codex exe  : ${env.codexExe.path ?? '(not found)'}  [${env.codexExe.source}]`)

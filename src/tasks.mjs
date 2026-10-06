@@ -392,6 +392,84 @@ export function createTaskService({ statePath, load, save, mutate, dsh, queueToC
   }
 
   /**
+   * Open a task and send it to Codex — the mirror of {@link sendTaskToDsh}.
+   *
+   * Without this the service could only record tasks travelling DSH-ward, so a
+   * task started from this side had no taskId, no correlation, and therefore no
+   * relayed reply. Both directions now create the same kind of record.
+   *
+   * The marker travels with the prompt so the reply can name the task; when the
+   * reply arrives as a DSH turn carrying that marker, the relay routes it back to
+   * this side's originating session.
+   *
+   * @param {object} args
+   * @param {string} args.pairId - the pair to send through.
+   * @param {string} args.text - full task text (may be arbitrarily long).
+   * @param {string} [args.taskId] - reuse an existing task id.
+   * @returns {Promise<object>} the task and its delivery result.
+   */
+  const sendTaskToCodex = async ({ pairId, text, taskId }) => {
+    const state = load()
+    const pair = state.pairs[pairId]
+    if (pair === undefined) return { ok: false, error: `unknown pair ${pairId}` }
+    if (typeof text !== 'string' || text.trim() === '') return { ok: false, error: 'text is required' }
+
+    const id = taskId ?? `task-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${randomUUID().slice(0, 8)}`
+
+    // Baseline for correlation, exactly as the DSH-ward direction does: only a
+    // turn completed after this point can be the reply.
+    const baselineTurn = await latestTurnForPair(pair)
+
+    // The marker goes on the wire first so the peer can echo it back verbatim.
+    const marked = `${taskMarker(id)}\n\n${text}`
+    const envelope = await record({ pairId, sender: 'codex', kind: 'task', text: marked, taskId: id })
+
+    const delivery = await deliverToCodex({ messageId: envelope.messageId })
+
+    await mutate((fresh) => {
+      fresh.tasks = fresh.tasks ?? {}
+      fresh.tasks[id] = {
+        taskId: id,
+        pairId,
+        // `dir` records which way the task travels, so a reply can be routed back
+        // to the originator instead of always being treated as DSH-ward.
+        dir: 'to-codex',
+        status: 'open',
+        createdAt: Date.now(),
+        requestMessageId: envelope.messageId,
+        requestTurn: baselineTurn,
+        body: envelope.body
+      }
+      return true
+    })
+
+    log(`[task] ${id} sent to Codex (${delivery.state}, ${delivery.receipts?.length ?? 0} part(s))`)
+    return { ok: true, taskId: id, messageId: envelope.messageId, state: delivery.state, parts: delivery.receipts?.length ?? 0 }
+  }
+
+  /**
+   * Close a `to-codex` task once its reply has arrived.
+   *
+   * @param {object} args
+   * @param {string} args.taskId - the task being answered.
+   * @param {object} [args.turn] - the DSH turn that carries the reply, when found.
+   * @returns {Promise<{closed: boolean, reason?: string}>} whether the task closed.
+   */
+  const recordCodexReply = async ({ taskId, turn }) => {
+    if (turn === undefined) return { closed: false, reason: 'no reply turn carrying this task marker yet' }
+    await mutate((fresh) => {
+      const task = fresh.tasks[taskId]
+      if (task === undefined || task.status !== 'open') return true
+      task.status = 'answered'
+      task.replyTurn = turn.turn
+      task.replyText = turn.text
+      task.answeredAt = Date.now()
+      return true
+    })
+    return { closed: true }
+  }
+
+  /**
    * Highest completed turn in a pair's DSH session right now, or 0.
    *
    * @param {object} pair - the bound pair.
@@ -414,6 +492,8 @@ export function createTaskService({ statePath, load, save, mutate, dsh, queueToC
     confirmCompletion,
     relayReplies,
     sendTaskToDsh,
+    sendTaskToCodex,
+    recordCodexReply,
     /** Read a stored body by message id (for operators and tests). */
     readBody: (messageId) => {
       const message = load().messages_v2?.find((candidate) => candidate.messageId === messageId)

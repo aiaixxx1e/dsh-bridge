@@ -33,6 +33,7 @@ import { listCodexSessions, listDshSessions, resolveExactSession } from '../src/
 import { DshClient } from '../src/client.mjs'
 import { queueToCodex, readSessionIndex, findThreads } from '../src/codex.mjs'
 import { extractCompletedTurns, needsConfirmation, turnsAfter } from '../src/extract.mjs'
+import { extractTaskMarker } from '../src/envelope.mjs'
 import { findSessionLog, readSessionEvents } from '../src/session-log.mjs'
 import { createTaskService } from '../src/tasks.mjs'
 
@@ -336,6 +337,10 @@ function announceBroker({ brokerUrl, statePath, log }) {
  * answers a task the Codex side opened, so process narration stays out of the
  * peer's conversation.
  *
+ * Only `to-dsh` tasks are handled here. A `to-codex` task travels the other way,
+ * and its DSH-side marker is the peer's reply rather than our answer; forwarding
+ * that would echo the reply back to its author.
+ *
  * @param {object} args
  * @param {string} args.state - the freshly loaded state.
  * @param {object} args.dsh - DSH client.
@@ -344,7 +349,10 @@ function announceBroker({ brokerUrl, statePath, log }) {
  * @returns {Promise<{forwarded: number, skipped: number}>} relay summary.
  */
 async function relayTaskRepliesV2({ state, dsh, tasks, log }) {
-  const openTasks = Object.values(state.tasks ?? {}).filter((task) => task.status === 'open')
+  const openTasks = Object.values(state.tasks ?? {}).filter(
+    // A task without `dir` predates the field and is DSH-ward by construction.
+    (task) => task.status === 'open' && (task.dir ?? 'to-dsh') === 'to-dsh'
+  )
   if (openTasks.length === 0) return { forwarded: 0, skipped: 0 }
 
   let forwarded = 0
@@ -372,6 +380,82 @@ async function relayTaskRepliesV2({ state, dsh, tasks, log }) {
   }
 
   return { forwarded, skipped }
+}
+
+/** One relay pass. Task mutations reuse the lock already held by the poll. */
+export async function pollBrokerOnce({ statePath, dsh, log = () => {}, queue = queueToCodex,
+  relayTasks = relayTaskRepliesV2, relayLegacy = relayDshToCodex, relayCodexReplies = recordCodexReplies }) {
+  return withStateLock(statePath, async () => {
+    const fresh = loadState(statePath)
+    const tasks = createTaskService({
+      statePath,
+      load: () => fresh,
+      save: state => saveState(state, statePath),
+      mutate: async operation => {
+        await operation(fresh)
+        saveState(fresh, statePath)
+      },
+      dsh,
+      queueToCodex: queue,
+      log
+    })
+    await relayLegacy({ state: fresh, dsh, log })
+    // DSH-ward tasks: forward the DSH answer to Codex.
+    const result = await relayTasks({ state: fresh, dsh, tasks, log })
+    // Codex-ward tasks: close them with the reply that came back from Codex.
+    await relayCodexReplies({ state: fresh, tasks, log })
+    saveState(fresh, statePath)
+    return result
+  })
+}
+
+/**
+ * Record replies that come back from the Codex side for DSH-originated tasks.
+ *
+ * A `to-codex` task was sent with the marker `[bridge-task <id>]`, so when the
+ * peer answers, the answer arrives here as a DSH turn carrying that same marker.
+ * There is nothing to forward in that case — the originator IS this session — so
+ * the job is to close the task with the reply it received, which is what makes
+ * the exchange auditable from `GET /tasks`.
+ *
+ * This is deliberately separate from {@link relayTaskRepliesV2}: forwarding a
+ * `to-codex` reply back to Codex would echo the peer's own words to it.
+ *
+ * @param {object} args
+ * @param {object} args.state - the freshly loaded state.
+ * @param {object} args.tasks - the task service.
+ * @param {(message: string) => void} args.log - progress sink.
+ * @returns {Promise<{closed: number}>} how many tasks were closed.
+ */
+async function recordCodexReplies({ state, tasks, log }) {
+  const openTasks = Object.values(state.tasks ?? {}).filter(
+    (task) => task.status === 'open' && task.dir === 'to-codex'
+  )
+  if (openTasks.length === 0) return { closed: 0 }
+
+  let closed = 0
+  for (const task of openTasks) {
+    const pair = state.pairs[task.pairId]
+    if (pair === undefined) continue
+    let turns
+    try {
+      turns = extractCompletedTurns(readSessionEvents(findSessionLog(undefined, pair.dshCwd, pair.dshSessionId)))
+    } catch (error) {
+      log(`[task] ${task.taskId}: cannot read DSH log: ${error.message}`)
+      continue
+    }
+
+    // The reply must postdate the task and name it explicitly.
+    const answering = turns.find(
+      (turn) => turn.turn > (task.requestTurn ?? 0) && extractTaskMarker(turn.text) === task.taskId
+    )
+    const result = await tasks.recordCodexReply({ taskId: task.taskId, turn: answering })
+    if (result.closed) {
+      closed += 1
+      log(`[task] ${task.taskId}: Codex reply recorded from DSH turn ${answering.turn}`)
+    }
+  }
+  return { closed }
 }
 
 /** Build the loopback HTTP API. */
@@ -532,6 +616,21 @@ function createBrokerServer({ statePath, dsh, log, tasks }) {
           return send(400, { ok: false, error: 'text is required (send the full body in the JSON field; there is no command-line ceiling here)' })
         }
         const result = await tasks.sendTaskToDsh({ pairId: body.pairId, text, taskId: body.taskId, mode: body.mode })
+        if (!result.ok) return send(400, { ok: false, error: result.error })
+        send(200, { ok: true, ...result })
+        return
+      }
+
+      // The mirror of /send-task: hand a task to the Codex side and record it, so
+      // a task started here has a taskId to correlate its reply against. Long
+      // bodies are safe in JSON even though the Codex transport is command-line
+      // bound, because the broker splits them.
+      if (request.method === 'POST' && url.pathname === '/send-task-to-codex') {
+        const body = await readBody()
+        if (typeof body.pairId !== 'string') return send(400, { ok: false, error: 'pairId is required' })
+        const text = typeof body.text === 'string' ? body.text : undefined
+        if (text === undefined || text.trim() === '') return send(400, { ok: false, error: 'text is required' })
+        const result = await tasks.sendTaskToCodex({ pairId: body.pairId, text, taskId: body.taskId })
         if (!result.ok) return send(400, { ok: false, error: result.error })
         send(200, { ok: true, ...result })
         return
@@ -934,6 +1033,37 @@ async function main() {
       return
     }
 
+    case 'send-task-to-codex': {
+      const { flags, positional } = parseFlags(rest)
+      const pairId = positional[0]
+      if (!pairId) {
+        console.error('usage: broker.mjs send-task-to-codex <pairId> (--body-file FILE | --stdin | <text...>) [--task-id ID]')
+        process.exitCode = 2
+        return
+      }
+      const text = await readTextInput({ flags, positional: positional.slice(1) })
+      if (text.trim() === '') {
+        console.error('send-task-to-codex refused: empty body')
+        process.exitCode = 2
+        return
+      }
+      const result = await tasks.sendTaskToCodex({
+        pairId,
+        text,
+        taskId: typeof flags['task-id'] === 'string' ? flags['task-id'] : undefined
+      })
+      if (!result.ok) {
+        console.error(`send-task-to-codex failed: ${result.error}`)
+        process.exitCode = 1
+        return
+      }
+      console.log(`TASK ${result.taskId} (direction: to-codex)`)
+      console.log(`  messageId : ${result.messageId}`)
+      console.log(`  delivery  : ${result.state}${result.parts > 1 ? ` (${result.parts} parts)` : ''}`)
+      console.log('  The task carries [bridge-task <id>]; the peer echoes it back and the poll closes the task.')
+      return
+    }
+
     case 'status': {
       const { positional } = parseFlags(rest)
       const wanted = positional[0]
@@ -1027,21 +1157,18 @@ async function main() {
        * resurrect an older `lastTurn` and re-send delivered turns.
        */
       const pollOnce = async () => {
-        await withStateLock(statePath, async () => {
-          const fresh = loadState(statePath)
-          // v1 blanket forwarding stays available but is off unless a pair opts in.
-          await relayDshToCodex({ state: fresh, dsh, log })
-          // v2: forward only replies correlated to an open task.
-          await relayTaskRepliesV2({ state: fresh, dsh, tasks, log })
-          saveState(fresh, statePath)
-        })
+        await pollBrokerOnce({ statePath, dsh, log })
       }
 
       // The interval is deliberately NOT unref'd: the polling loop is the
       // broker's reason to exist, so it must keep the process alive even if the
       // listening socket is the only other handle.
+      let polling = false
       setInterval(() => {
+        if (polling) return
+        polling = true
         pollOnce().catch((error) => log(`[relay] error: ${error.message}`))
+          .finally(() => { polling = false })
       }, intervalMs)
       return
     }
