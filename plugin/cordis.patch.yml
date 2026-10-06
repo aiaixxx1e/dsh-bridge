@@ -1,0 +1,10 @@
+# dsh-codex-bridge-tool bundle layer: applied automatically when the package is
+# installed into a profile (package.json declares dsh.bundle.patch), i.e. a
+# profile that runs `dsh plugin --profile <p> add dsh-codex-bridge-tool` gets
+# this wiring without manual cordis.patch.yml edits.
+
+# Mount the two Codex-bridge tools. `name` points at the package itself; the
+# loader resolves it from the profile's node_modules by package name.
+- insert:
+    - id: codex-bridge-tool
+      name: dsh-codex-bridge-tool

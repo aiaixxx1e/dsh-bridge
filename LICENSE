@@ -1,0 +1,170 @@
+# 授权条款（Terms）
+
+本作品使用 **PolyForm Noncommercial License 1.0.0**（允许非商业用途、允许修改），
+并附加**强著佐权**条款：**任何修改、衍生作品或再分发，必须以相同条款开源**。
+
+> Required Notice: Copyright (c) 2026 DSH Bridge contributors
+> (DeepSeek, ChatGPT/Codex, and the project's human maintainer)
+
+- ✅ 允许：个人使用、学习、研究、修改、再分发
+- ❌ 禁止：任何商业用途（含商业产品集成、商业服务、收费分发）
+- ⚠️ 要求：二次修改必须开源，且必须保留署名与本条款
+
+完整条款见下。如需商业授权，请联系版权持有人另行协商。
+
+---
+
+# PolyForm Noncommercial License 1.0.0
+
+<https://polyformproject.org/licenses/noncommercial/1.0.0>
+
+## Acceptance
+
+In order to get any license under these terms, you must agree
+to them as both strict obligations and conditions to all
+your licenses.
+
+## Copyright License
+
+The licensor grants you a copyright license for the
+software to do everything you might do with the software
+that would otherwise infringe the licensor's copyright
+in it for any permitted purpose. However, you may only
+distribute the software according to [Distribution
+License](#distribution-license) and make changes or new works
+based on the software according to [Changes and New Works
+License](#changes-and-new-works-license).
+
+## Distribution License
+
+The licensor grants you an additional copyright license
+to distribute copies of the software. Your license
+to distribute covers distributing the software with
+changes and new works permitted by [Changes and New Works
+License](#changes-and-new-works-license).
+
+## Notices
+
+You must ensure that anyone who gets a copy of any part of
+the software from you also gets a copy of these terms or the
+URL for them above, as well as copies of any plain-text lines
+beginning with `Required Notice:` that the licensor provided
+with the software. For example:
+
+> Required Notice: Copyright YYYY NAME OF COPYRIGHT HOLDER
+
+## Changes and New Works License
+
+The licensor grants you an additional copyright license to
+make changes and new works based on the software for any
+permitted purpose.
+
+## Patent License
+
+The licensor grants you a patent license for the software that
+covers patent claims the licensor can license, or becomes able
+to license, that you would infringe by using the software.
+
+## Noncommercial Purposes
+
+Any noncommercial purpose is a permitted purpose.
+
+## Personal Uses
+
+Personal use for research, experiment, and testing for
+the benefit of public knowledge, personal study, private
+entertainment, hobby projects, amateur pursuits, or religious
+observance, without any anticipated commercial application,
+is use for a permitted purpose.
+
+## Noncommercial Organizations
+
+Use by any charitable organization, educational institution,
+public research organization, public safety or health
+organization, environmental protection organization,
+or government institution is use for a permitted purpose
+regardless of the source of funding or obligations resulting
+from the funding.
+
+## Fair Use
+
+You may have "fair use" rights for the software under the
+law. These terms do not limit them.
+
+## No Other Rights
+
+These terms do not allow you to sublicense or transfer any of
+your licenses to anyone else, or prevent the licensor from
+granting licenses to anyone else. These terms do not imply
+any other licenses.
+
+## Patent Defense
+
+If you make any written claim that the software infringes or
+contributes to infringement of any patent, your patent license
+for the software granted under these terms ends immediately. If
+your company makes such a claim, your patent license ends
+immediately for work on behalf of your company.
+
+## Violations
+
+The first time you are notified in writing that you have
+violated any of these terms, or done anything with the software
+not covered by your licenses, your licenses can nonetheless
+continue if you come into full compliance with these terms,
+and take practical steps to correct past violations, within
+32 days of receiving notice. Otherwise, all your licenses
+end immediately.
+
+## No Liability
+
+***As far as the law allows, the software comes as is, without
+any warranty or condition, and the licensor will not be liable
+to you for any damages arising out of these terms or the use
+or nature of the software, under any kind of legal claim.***
+
+## Definitions
+
+The **licensor** is the individual or entity offering these
+terms, and the **software** is the software the licensor makes
+available under these terms.
+
+**You** refers to the individual or entity agreeing to these
+terms.
+
+**Your company** is any legal entity, sole proprietorship,
+or other kind of organization that you work for, plus all
+organizations that have control over, are under the control of,
+or are under common control with that organization. **Control**
+means ownership of substantially all the assets of an entity,
+or the power to direct its management and policies by vote,
+contract, or otherwise. Control can be direct or indirect.
+
+**Your licenses** are all the licenses granted to you for the
+software under these terms.
+
+**Use** means anything you do with the software requiring one
+of your licenses.
+
+---
+
+## 附加条款：强著佐权（Copyleft）
+
+本附加条款是授权条件的一部分，与上述许可条款具有同等效力。
+
+1. **二次修改必须开源。** 你若修改、扩展、重写或以本作品为基础创作衍生作品
+   （无论是否分发），必须将完整源代码以本许可（或经版权持有人书面认可、
+   条款强度不低于本许可的许可）公开。仅限内部使用且不分发的修改同样受此约束。
+
+2. **必须署名。** 任何分发或衍生作品必须保留本文件的署名段落，并明确标注
+   所依据的原始项目与本许可。
+
+3. **必须传递条款。** 你必须让任何获得副本的人一并获得本许可全文与署名信息。
+
+4. **不得附加限制。** 你不得对本作品或其衍生作品施加比本许可更严格的
+   使用限制，也不得将本作品并入闭源或商业产品。
+
+5. **商业用途需另行授权。** 任何商业用途都必须事先取得版权持有人的书面授权。
+
+> 说明：PolyForm Noncommercial 本身**不包含**著佐权条款，上述附加条款是本项目
+> 版权持有人额外施加的授权条件。若两者冲突，以更严格的条款为准。

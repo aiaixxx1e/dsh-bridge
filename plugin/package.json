@@ -1,0 +1,21 @@
+{
+  "name": "dsh-codex-bridge-tool",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DSH native tools that let a DeepSeek Harness agent send work to a Codex session through the local dsh-bridge broker",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

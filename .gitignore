@@ -1,0 +1,17 @@
+# Runtime state and logs — never publish
+state.json
+state.*.bak
+*.lock
+bodies/
+*.log
+*.log.err
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
